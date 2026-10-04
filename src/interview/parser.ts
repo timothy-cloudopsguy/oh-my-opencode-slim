@@ -46,6 +46,24 @@ function normalizeQuestion(
   };
 }
 
+export function parseInterviewStateJson(
+  json: string,
+): Record<string, unknown> | null {
+  let rawJson = json.trim();
+  try {
+    JSON.parse(rawJson);
+  } catch {
+    rawJson = repairJsonNewlines(rawJson);
+  }
+  try {
+    const raw = JSON.parse(rawJson);
+    const parsed = RawInterviewStateSchema.parse(raw);
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function repairJsonNewlines(json: string): string {
   let result = '';
   let inString = false;
@@ -114,29 +132,18 @@ export function parseAssistantState(
     return { state: null };
   }
 
-  // Pre-process match[1] to repair common JSON escaping issues (e.g. unescaped newlines inside strings)
-  let rawJson = match[1].trim();
-
-  // A robust heuristic to escape literal carriage returns/newlines inside JSON string values
-  // so JSON.parse doesn't throw "JSON Parse error: Expected '}'" or "Unexpected token".
-  // This is safe because it only targets characters within quotes.
-  try {
-    // If it parses directly, great!
-    JSON.parse(rawJson);
-  } catch {
-    // Try to normalize literal newlines inside string values:
-    rawJson = repairJsonNewlines(rawJson);
+  const parsed = parseInterviewStateJson(match[1]);
+  if (!parsed) {
+    return {
+      state: null,
+      error: 'Failed to parse interview state',
+    };
   }
 
   try {
-    const raw = JSON.parse(rawJson);
-    // Validate raw LLM output with Zod before processing
-    const parsed = RawInterviewStateSchema.parse(raw) as Record<
-      string,
-      unknown
-    >;
     const summary =
       typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+    const patch = typeof parsed.patch === 'string' ? parsed.patch : undefined;
     const title =
       typeof parsed.title === 'string' && parsed.title.trim().length > 0
         ? parsed.title.trim()
@@ -151,6 +158,7 @@ export function parseAssistantState(
     return {
       state: {
         summary,
+        patch,
         title,
         questions,
       },

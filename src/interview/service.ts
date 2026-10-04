@@ -17,10 +17,14 @@ import {
   createInterviewFilePath,
   DEFAULT_OUTPUT_FOLDER,
   ensureInterviewFile,
+  extractSpecOutline,
   extractSummarySection,
   extractTitle,
+  hashInterviewState,
   InterviewDocumentOwnershipError,
+  InterviewPatchApplyError,
   normalizeOutputFolder,
+  parseFrontmatter,
   parseSpecBlocks,
   readInterviewDocument,
   relativeInterviewPath,
@@ -36,8 +40,13 @@ import {
 } from './parser';
 import {
   buildAnswerPrompt,
+  buildBlockCommentPrompt,
+  buildChatPrompt,
   buildKickoffPrompt,
+  buildNudgePrompt,
+  buildPatchRepairPrompt,
   buildResumePrompt,
+  type SpecPromptContext,
 } from './prompts';
 import {
   createV1InterviewSessionRuntime,
@@ -181,6 +190,7 @@ export function createInterviewService(
     interviewId: string,
     action: 'more-questions' | 'confirm-complete',
   ) => Promise<void>;
+  resetPatchMemoryForTests: () => void;
 } {
   const maxQuestions = config?.maxQuestions ?? DEFAULT_MAX_QUESTIONS;
   const outputFolder = normalizeOutputFolder(
@@ -206,6 +216,7 @@ export function createInterviewService(
   let abandonedOrderCounter = 0;
   const finalizationPending = new Set<string>();
   const finalizationReady = new Set<string>();
+  const patchRepairSent = new Set<string>();
 
   function setBaseUrlResolver(resolver: () => Promise<string>): void {
     resolveBaseUrl = resolver;
@@ -271,6 +282,17 @@ export function createInterviewService(
 
   function getInterviewById(interviewId: string): InterviewRecord | null {
     return interviewsById.get(interviewId) ?? null;
+  }
+
+  function specContext(
+    markdownPath: string,
+    document: string,
+  ): SpecPromptContext {
+    return {
+      relativePath: relativeInterviewPath(ctx.directory, markdownPath),
+      title: extractTitle(document),
+      outline: extractSpecOutline(extractSummarySection(document)),
+    };
   }
 
   /**
@@ -443,6 +465,7 @@ export function createInterviewService(
         };
 
         let document: string;
+        let patchError: InterviewPatchApplyError | null = null;
         if (isCleanFinalResponse) {
           document = await rewriteInterviewDocumentWithFinalSpec(
             interview,
@@ -450,19 +473,62 @@ export function createInterviewService(
           );
           finalizationPending.delete(interview.id);
         } else if (parsed.state) {
-          document = await rewriteInterviewDocument(
-            interview,
-            state.summary,
-            state.title,
-          );
+          const turnHash = hashInterviewState(state);
+          const consumed = parseFrontmatter(existingDocument)?.consumedState;
+          if (consumed === turnHash) {
+            document = existingDocument;
+          } else {
+            try {
+              document = await rewriteInterviewDocument(
+                interview,
+                state.summary,
+                state.title,
+                state.patch,
+                turnHash,
+              );
+              if (state.patch?.trim()) {
+                patchRepairSent.delete(interview.id);
+              }
+            } catch (error) {
+              if (!(error instanceof InterviewPatchApplyError)) {
+                throw error;
+              }
+              patchError = error;
+              document = existingDocument;
+            }
+          }
         } else {
           document = await readInterviewDocument(interview);
         }
 
-        return { document, state };
+        return { document, state, patchError };
       },
     );
-    const { document, state } = synced;
+    const { document, state, patchError } = synced;
+    const repairExhausted =
+      patchError !== null && patchRepairSent.has(interview.id);
+    if (patchError && !repairExhausted) {
+      patchRepairSent.add(interview.id);
+      sessionBusy.set(interview.sessionID, true);
+      const model = sessionModel.get(interview.sessionID);
+      try {
+        await sessionRuntime.continue(
+          interview.sessionID,
+          buildPatchRepairPrompt(
+            patchError.failedHunk,
+            patchError.contextWindow,
+            maxQuestions,
+          ),
+          model ? (parseModelReference(model) ?? undefined) : undefined,
+        );
+      } catch (error) {
+        sessionBusy.set(interview.sessionID, false);
+        log('[interview] spec patch repair failed to send', {
+          interviewId: interview.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     const blocks = parseSpecBlocks(document);
 
     const interviewState: InterviewState = {
@@ -494,7 +560,9 @@ export function createInterviewService(
                       sessionBusy.get(interview.sessionID) === false
                     ? 'completed'
                     : 'awaiting-agent',
-      lastParseError: parsed.latestAssistantError,
+      lastParseError: repairExhausted
+        ? 'The spec patch did not apply.'
+        : parsed.latestAssistantError,
       isBusy: sessionBusy.get(interview.sessionID) === true,
       summary: state.summary,
       questions: state.questions,
@@ -627,7 +695,12 @@ export function createInterviewService(
       await withInterviewDocumentLock(interview.markdownPath, () =>
         appendInterviewAnswers(interview, state.questions, answers),
       );
-      const prompt = buildAnswerPrompt(answers, state.questions, maxQuestions);
+      const prompt = buildAnswerPrompt(
+        answers,
+        state.questions,
+        maxQuestions,
+        specContext(interview.markdownPath, state.document),
+      );
 
       const model = sessionModel.get(interview.sessionID);
       await sessionRuntime.continue(
@@ -698,7 +771,12 @@ export function createInterviewService(
       const document = await fs.readFile(interview.markdownPath, 'utf8');
       await notifyInterviewUrl(input.sessionID, interview);
       output.parts.push(
-        createInternalAgentTextPart(buildResumePrompt(document, maxQuestions)),
+        createInternalAgentTextPart(
+          buildResumePrompt(
+            specContext(interview.markdownPath, document),
+            maxQuestions,
+          ),
+        ),
       );
       return;
     }
@@ -888,26 +966,12 @@ export function createInterviewService(
         throw new Error('Interview is waiting for a valid agent update.');
       }
 
-      const relativePath = relativeInterviewPath(
-        ctx.directory,
-        interview.markdownPath,
+      const prompt = buildBlockCommentPrompt(
+        sectionTitle,
+        comment,
+        maxQuestions,
+        specContext(interview.markdownPath, state.document),
       );
-
-      const prompt = [
-        `You are updating the active interview specification document at "${relativePath}".`,
-        `The current document content on disk is:`,
-        `\`\`\`markdown`,
-        state.document,
-        `\`\`\``,
-        ``,
-        `The user submitted specific feedback/comments for the section "${sectionTitle}".`,
-        `Feedback: ${comment}`,
-        ``,
-        `Update the specification summary (focusing heavily on making changes to the "${sectionTitle}" section) to address this feedback.`,
-        `If this feedback implies other parts of the spec should change, update them too.`,
-        `Include the updated 11-section specification and ask the next highest-value clarifying questions as questions (up to ${maxQuestions} questions) if needed.`,
-        `Return the same <interview_state> JSON block format as before.`,
-      ].join('\n');
 
       const model = sessionModel.get(interview.sessionID);
       await sessionRuntime.continue(
@@ -949,25 +1013,11 @@ export function createInterviewService(
         throw new Error('Interview is waiting for a valid agent update.');
       }
 
-      const relativePath = relativeInterviewPath(
-        ctx.directory,
-        interview.markdownPath,
+      const prompt = buildChatPrompt(
+        message,
+        maxQuestions,
+        specContext(interview.markdownPath, state.document),
       );
-
-      const prompt = [
-        `You are continuing the interview for the specification document at "${relativePath}".`,
-        `The current document content on disk is:`,
-        `\`\`\`markdown`,
-        state.document,
-        `\`\`\``,
-        ``,
-        `The user sent a freeform message via the dashboard chat panel:`,
-        `${message}`,
-        ``,
-        `Process this request - it may be a request to add a new section, revise existing content, ask clarifying questions, or make structural changes.`,
-        `Update the specification document accordingly and include the updated 11-section specification.`,
-        `Ask up to ${maxQuestions} clarifying questions if needed using the same <interview_state> JSON block format as before.`,
-      ].join('\n');
 
       const model = sessionModel.get(interview.sessionID);
       await sessionRuntime.continue(
@@ -1006,40 +1056,11 @@ export function createInterviewService(
     try {
       const state = await getInterviewState(interviewId);
 
-      const relativePath = relativeInterviewPath(
-        ctx.directory,
-        interview.markdownPath,
+      const prompt = buildNudgePrompt(
+        action,
+        maxQuestions,
+        specContext(interview.markdownPath, state.document),
       );
-
-      let prompt: string;
-      if (action === 'more-questions') {
-        prompt = [
-          `You are continuing the interview for the specification document at "${relativePath}".`,
-          `The current document content on disk is:`,
-          `\`\`\`markdown`,
-          state.document,
-          `\`\`\``,
-          ``,
-          `The user reviewed the completed interview spec and wants you to continue.`,
-          ``,
-          `Ask up to ${maxQuestions} new clarifying questions about aspects that are still unclear or underspecified.`,
-          `Include the structured <interview_state> block with new questions.`,
-        ].join('\n');
-      } else {
-        prompt = [
-          `You are finishing the interview for the specification document at "${relativePath}".`,
-          `The current document content on disk is:`,
-          `\`\`\`markdown`,
-          state.document,
-          `\`\`\``,
-          ``,
-          `The user confirmed the interview spec is complete.`,
-          ``,
-          `Produce a final, polished version of the full spec document.`,
-          `Do NOT include any <interview_state> block - just output the final spec as clean markdown.`,
-          `The spec should be comprehensive, well-structured, and ready for implementation.`,
-        ].join('\n');
-      }
 
       const model = sessionModel.get(interview.sessionID);
       if (action === 'confirm-complete') {
@@ -1078,5 +1099,8 @@ export function createInterviewService(
     submitBlockComment,
     submitChat,
     handleNudgeAction,
+    resetPatchMemoryForTests() {
+      patchRepairSent.clear();
+    },
   };
 }

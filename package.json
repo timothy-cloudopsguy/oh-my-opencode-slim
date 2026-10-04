@@ -119,6 +119,7 @@
     "@types/turndown": "^5.0.6",
     "all-contributors-cli": "^6.26.1",
     "bun-types": "^1.4.2",
+    "js-tiktoken": "^1.0.21",
     "typescript": "7.0"
   },
   "peerDependencies": {

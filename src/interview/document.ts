@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fsSync from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { parseFrontmatter as sharedParseFrontmatter } from '../utils/frontmatter';
+import { applyUnifiedDiff, InterviewPatchApplyError } from './patch';
 import type {
   InterviewAnswer,
   InterviewQuestion,
@@ -25,6 +26,8 @@ type DocumentLock = {
   lockPath: string;
   token: string;
 };
+
+export { InterviewPatchApplyError } from './patch';
 
 export class InterviewDocumentOwnershipError extends Error {
   constructor(
@@ -153,6 +156,7 @@ function buildInterviewFrontmatter(
   baseMessageCount: number,
   owner = 'agent',
   tags = ['spec', 'diagnostic'],
+  consumedState?: string,
 ): string {
   const now = new Date();
   const dateStr = now.toISOString().split('T')[0];
@@ -165,9 +169,29 @@ function buildInterviewFrontmatter(
     `date_created: ${dateStr}`,
     `owner: ${owner}`,
     `tags: [${tags.join(', ')}]`,
+    ...(consumedState ? [`consumedState: ${consumedState}`] : []),
     '---',
     '',
   ].join('\n');
+}
+
+/** Hash of one assistant interview_state turn. Empty patches stay distinct. */
+export function hashInterviewState(state: {
+  summary: string;
+  title?: string;
+  patch?: string;
+  questions: Array<{ id: string; question: string }>;
+}): string {
+  const canonical = JSON.stringify({
+    summary: state.summary,
+    title: state.title ?? '',
+    patch: state.patch ?? '',
+    questions: state.questions.map((question) => ({
+      id: question.id,
+      question: question.question,
+    })),
+  });
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 export async function claimInterviewDocument(
@@ -328,6 +352,15 @@ export function extractSummarySection(document: string): string {
   return document.slice(summaryStart, summaryEnd).trim();
 }
 
+/** Heading lines from a spec body, used instead of pasting the body into a prompt. */
+export function extractSpecOutline(spec: string): string {
+  const headings = spec
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => /^#{1,6}\s+\S/.test(line));
+  return headings.length > 0 ? headings.join('\n') : '(no headings yet)';
+}
+
 export function extractTitle(document: string): string {
   const match = document.match(/^#\s+(.+)$/m);
   return match?.[1]?.trim() ?? '';
@@ -342,6 +375,7 @@ export function buildInterviewDocument(
     baseMessageCount?: number;
     owner?: string;
     tags?: string[];
+    consumedState?: string;
   },
 ): string {
   const normalizedSummary = summary.trim() || 'Waiting for interview answers.';
@@ -356,6 +390,7 @@ export function buildInterviewDocument(
         meta.baseMessageCount ?? 0,
         owner,
         tags,
+        meta.consumedState,
       )
     : '';
 
@@ -413,16 +448,37 @@ export async function rewriteInterviewDocument(
   record: InterviewRecord,
   summary: string,
   title?: string,
+  patch?: string,
+  consumedState?: string,
 ): Promise<string> {
   const existing = await readInterviewDocument(record);
   const history = extractHistorySection(existing);
+  const current = extractSummarySection(existing);
+  let nextSummary = summary;
+  if (patch !== undefined) {
+    if (patch.trim()) {
+      const applied = applyUnifiedDiff(current, patch);
+      if (!applied.ok) {
+        throw new InterviewPatchApplyError(
+          applied.failedHunk,
+          applied.contextWindow,
+        );
+      }
+      nextSummary = applied.text.trim();
+    } else {
+      // Explicit empty patch: the spec did not change. A one-line status
+      // must not replace the section.
+      nextSummary = current || summary;
+    }
+  }
   const next = buildInterviewDocument(
     title || extractTitle(existing) || record.idea,
-    summary,
+    nextSummary,
     history,
     {
       sessionID: record.sessionID,
       baseMessageCount: record.baseMessageCount,
+      consumedState: consumedState ?? parseFrontmatter(existing)?.consumedState,
     },
   );
   await fs.writeFile(record.markdownPath, next, 'utf8');
@@ -497,6 +553,7 @@ export async function appendInterviewAnswers(
       {
         sessionID: record.sessionID,
         baseMessageCount: record.baseMessageCount,
+        consumedState: parseFrontmatter(existing)?.consumedState,
       },
     ),
     'utf8',

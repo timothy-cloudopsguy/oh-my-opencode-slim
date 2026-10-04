@@ -1057,7 +1057,9 @@ describe('interview service', () => {
       const outputText = extractOutputText(output);
       expect(outputText).toContain('Resume the interview');
       expect(outputText).toContain('Existing Idea');
-      expect(outputText).toContain('Existing spec content');
+      expect(outputText).toContain('interview/existing-idea.md');
+      expect(outputText).not.toContain('Existing spec content');
+      expect(outputText).not.toContain('Q: What platform?');
 
       // Should NOT send kickoff prompt
       expect(outputText).not.toContain(
@@ -2178,5 +2180,165 @@ describe('interview service empty-transcript belt (v2 retention loss)', () => {
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('spec patch contract', () => {
+  test('applies a later patch and sends one repair when a hunk misses', async () => {
+    const tempDir = await fs.mkdtemp('/tmp/interview-patch-contract-');
+    const messagesData: Array<{
+      info?: { role: string };
+      parts?: Array<{ type: string; text?: string }>;
+    }> = [];
+    const ctx = createMockContext({
+      directory: tempDir,
+      messagesData,
+    });
+    const service = createInterviewService(ctx);
+    service.setBaseUrlResolver(async () => 'http://localhost:9999');
+    const output = { parts: [] as Array<{ type: string; text?: string }> };
+    await service.handleCommandExecuteBefore(
+      {
+        command: 'interview',
+        sessionID: 'session-patch',
+        arguments: 'Patch Contract',
+      },
+      output,
+    );
+    const interviewId = requireInterviewId(
+      extractInterviewIdFromLastPrompt(ctx.client.session.prompt),
+    );
+
+    const kickoffSpec = [
+      '# Introduction',
+      '',
+      'alpha',
+      ...Array.from({ length: 40 }, (_, index) => `line-${index + 1}`),
+    ].join('\n');
+    messagesData.push({
+      info: { role: 'assistant' },
+      parts: [
+        {
+          type: 'text',
+          text: `<interview_state>${JSON.stringify({
+            summary: kickoffSpec,
+            questions: [
+              {
+                id: 'q-1',
+                question: 'Ship?',
+                options: ['Yes', 'No'],
+              },
+            ],
+          })}</interview_state>`,
+        },
+      ],
+    });
+    const written = await service.getInterviewState(interviewId);
+    expect(written.document).toContain('alpha');
+
+    messagesData.push({
+      info: { role: 'assistant' },
+      parts: [
+        {
+          type: 'text',
+          text: '<interview_state>{"summary":"Updated introduction.","patch":"@@ -1,3 +1,3 @@\\n # Introduction\\n \\n-alpha\\n+beta","questions":[{"id":"q-1","question":"Ship?","options":["Yes","No"]}]}</interview_state>',
+        },
+      ],
+    });
+    const patched = await service.getInterviewState(interviewId);
+    expect(patched.document).toContain('beta');
+    expect(patched.document).not.toContain('alpha');
+    expect(patched.summary).toBe('Updated introduction.');
+
+    messagesData.push({
+      info: { role: 'assistant' },
+      parts: [
+        {
+          type: 'text',
+          text: '<interview_state>{"summary":"status only","patch":"@@ -1,1 +1,1 @@\\n-missing\\n+nope","questions":[]}</interview_state>',
+        },
+      ],
+    });
+    ctx.client.session.promptAsync.mock.calls.length = 0;
+    const failed = await service.getInterviewState(interviewId);
+    expect(failed.document).toContain('beta');
+    expect(failed.document).not.toContain('status only');
+    expect(ctx.client.session.promptAsync).toHaveBeenCalledTimes(1);
+    const repair = getPromptTexts(ctx.client.session.promptAsync)[0] ?? '';
+    expect(repair).toContain('did not apply');
+    expect(repair).toContain('beta');
+    expect(repair).toContain('Nearby spec lines:');
+    expect(repair).not.toContain('line-40');
+    expect(repair).not.toContain('No answers yet.');
+
+    await service.getInterviewState(interviewId);
+    expect(ctx.client.session.promptAsync).toHaveBeenCalledTimes(1);
+    const again = await service.getInterviewState(interviewId);
+    expect(again.lastParseError).toBe('The spec patch did not apply.');
+
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  test('does not repair when the same turn is polled again', async () => {
+    const tempDir = await fs.mkdtemp('/tmp/interview-patch-cursor-');
+    const messagesData: Array<{
+      info?: { role: string };
+      parts?: Array<{ type: string; text?: string }>;
+    }> = [];
+    const ctx = createMockContext({
+      directory: tempDir,
+      messagesData,
+    });
+    const service = createInterviewService(ctx);
+    service.setBaseUrlResolver(async () => 'http://localhost:9999');
+    const output = { parts: [] as Array<{ type: string; text?: string }> };
+    await service.handleCommandExecuteBefore(
+      {
+        command: 'interview',
+        sessionID: 'session-cursor',
+        arguments: 'Patch Cursor',
+      },
+      output,
+    );
+    const interviewId = requireInterviewId(
+      extractInterviewIdFromLastPrompt(ctx.client.session.prompt),
+    );
+    messagesData.push({
+      info: { role: 'assistant' },
+      parts: [
+        {
+          type: 'text',
+          text: '<interview_state>{"summary":"# Introduction\\n\\nalpha","questions":[{"id":"q-1","question":"Ship?"}]}</interview_state>',
+        },
+      ],
+    });
+    await service.getInterviewState(interviewId);
+    messagesData.push({
+      info: { role: 'assistant' },
+      parts: [
+        {
+          type: 'text',
+          text: '<interview_state>{"summary":"Updated introduction.","patch":"@@ -1,3 +1,3 @@\\n # Introduction\\n \\n-alpha\\n+beta","questions":[{"id":"q-1","question":"Ship?"}]}</interview_state>',
+        },
+      ],
+    });
+
+    const patched = await service.getInterviewState(interviewId);
+    expect(patched.document).toContain('beta');
+    expect(patched.document).toContain('consumedState:');
+    const filePath = path.join(tempDir, patched.markdownPath);
+    const written = await fs.readFile(filePath, 'utf8');
+    ctx.client.session.promptAsync.mock.calls.length = 0;
+
+    await service.getInterviewState(interviewId);
+    expect(ctx.client.session.promptAsync).toHaveBeenCalledTimes(0);
+    expect(await fs.readFile(filePath, 'utf8')).toBe(written);
+
+    service.resetPatchMemoryForTests();
+    await service.getInterviewState(interviewId);
+    expect(ctx.client.session.promptAsync).toHaveBeenCalledTimes(0);
+    expect(await fs.readFile(filePath, 'utf8')).toBe(written);
+
+    await fs.rm(tempDir, { recursive: true, force: true });
   });
 });

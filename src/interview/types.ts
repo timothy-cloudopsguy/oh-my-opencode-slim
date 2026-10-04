@@ -14,6 +14,8 @@ export interface InterviewAnswer {
 
 export interface InterviewAssistantState {
   summary: string;
+  /** Unified diff of the current spec body. Absent on the kickoff turn. */
+  patch?: string;
   title?: string;
   questions: InterviewQuestion[];
 }
@@ -31,6 +33,7 @@ export const RawQuestionSchema = z.object({
 /** Raw interview_state block from LLM output. */
 export const RawInterviewStateSchema = z.object({
   summary: z.unknown().optional(),
+  patch: z.unknown().optional(),
   title: z.unknown().optional(),
   questions: z.array(z.unknown()).optional(),
 });

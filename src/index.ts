@@ -80,6 +80,7 @@ import {
   type MessageWithParts,
 } from './hooks/types';
 import { createInterviewManager } from './interview';
+import { collapseInterviewHistory } from './interview/history';
 import { discoverPreflightSkills } from './marketplace/preflight';
 import { MarketplaceService } from './marketplace/service';
 import { resolveDesiredMarketplacePackageIds } from './marketplace/status';
@@ -2778,6 +2779,7 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
       output: { messages: unknown[] },
     ): Promise<void> => {
       const typedOutput = output as { messages: MessageWithParts[] };
+      collapseInterviewHistory(typedOutput.messages);
       // Claim the mark synchronously: overlapping requests for this session
       // must not both strip reminders after their first asynchronous step.
       const sessionID =

@@ -18,7 +18,7 @@ function formatQuestionContext(questions: InterviewQuestion[]): string {
     .join('\n\n');
 }
 
-const SPECIFICATION_TEMPLATE_GUIDELINE = `
+export const SPECIFICATION_TEMPLATE_GUIDELINE = `
 Your target document MUST be structured strictly using the following 11-section template (exclude the frontmatter itself from the summary JSON field, as the tool handles frontmatter automatically):
 
 # Introduction
@@ -96,31 +96,73 @@ export function buildKickoffPrompt(idea: string, maxQuestions: number): string {
     '- If there are no more useful questions or the specification is complete, return zero questions.',
     `- Do not ask more than ${maxQuestions} questions in one round.`,
     '- Provide a concise "title" field (kebab-case, 3-6 words) suitable for a filename.',
+    '- This first turn only: put the full specification in summary. Later turns will ask for a unified diff in patch instead.',
+  ].join('\n');
+}
+
+export interface SpecPromptContext {
+  relativePath: string;
+  title: string;
+  outline: string;
+}
+
+function describeSpec(context: SpecPromptContext): string {
+  return [
+    `Specification file: ${context.relativePath}`,
+    `Title: ${context.title || '(untitled)'}`,
+    'Heading outline of the current spec body:',
+    context.outline || '(no headings yet)',
+    'Read that file if you need a section. Do not expect the spec body or the Q&A history in this prompt.',
+  ].join('\n');
+}
+
+function patchContract(maxQuestions: number): string {
+  return [
+    'The file on disk is the source of truth.',
+    'summary is a one-line status of what changed, not the specification.',
+    'patch is a unified diff against the current spec body only: the markdown under "## Current spec".',
+    'Do not include YAML frontmatter or the "## Q&A history" section in the diff.',
+    'If the spec body does not change, set patch to an empty string.',
+    'After any short preface, include this block:',
+    '<interview_state>',
+    '{',
+    '  "summary": "one-line status of what changed",',
+    '  "patch": "--- a/spec\\n+++ b/spec\\n@@ -1,1 +1,1 @@\\n-old line\\n+new line",',
+    '  "questions": [',
+    '    {',
+    '      "id": "short-kebab-id",',
+    '      "question": "question text",',
+    '      "options": ["option 1", "option 2"],',
+    '      "suggested": "option 1"',
+    '    }',
+    '  ]',
+    '}',
+    '</interview_state>',
+    `Return 0 to ${maxQuestions} questions.`,
+    'If there are no more useful questions or the specification is complete, return zero questions.',
   ].join('\n');
 }
 
 export function buildResumePrompt(
-  document: string,
+  context: SpecPromptContext,
   maxQuestions: number,
 ): string {
   return [
-    'Resume the interview from this existing markdown document.',
-    'Use the current spec and Q&A history as ground truth so far.',
-    SPECIFICATION_TEMPLATE_GUIDELINE,
+    'Resume the interview from the existing markdown document.',
+    'Use the file on disk as ground truth so far.',
     'Do not restart from scratch.',
-    '',
-    document,
-    '',
+    SPECIFICATION_TEMPLATE_GUIDELINE,
+    describeSpec(context),
     `Ask the next highest-value clarifying questions, up to ${maxQuestions} at a time.`,
-    'If there are no more useful questions or the spec is complete, return zero questions.',
-    'Return the same <interview_state> JSON block format as before.',
-  ].join('\n');
+    patchContract(maxQuestions),
+  ].join('\n\n');
 }
 
 export function buildAnswerPrompt(
   answers: Array<{ questionId: string; answer: string }>,
   questions: InterviewQuestion[],
   maxQuestions: number,
+  context: SpecPromptContext,
 ): string {
   const answerText = answers
     .map(
@@ -132,12 +174,90 @@ export function buildAnswerPrompt(
   return [
     'Continue the same interview.',
     SPECIFICATION_TEMPLATE_GUIDELINE,
+    describeSpec(context),
     'These were the active questions:',
     formatQuestionContext(questions),
     'The user answered:',
     answerText,
-    'Now update the specification summary document and ask the next highest-value clarifying questions.',
-    `Return 0 to ${maxQuestions} questions. If there are no more useful questions or the spec is complete, return zero questions.`,
-    'Return the same <interview_state> JSON block format as before.',
+    'Update the specification with a unified diff and ask the next highest-value clarifying questions.',
+    patchContract(maxQuestions),
+  ].join('\n\n');
+}
+
+export function buildBlockCommentPrompt(
+  sectionTitle: string,
+  comment: string,
+  maxQuestions: number,
+  context: SpecPromptContext,
+): string {
+  return [
+    'Continue the same interview.',
+    SPECIFICATION_TEMPLATE_GUIDELINE,
+    describeSpec(context),
+    `The user submitted feedback for the section "${sectionTitle}".`,
+    `Feedback: ${comment}`,
+    `Update the spec with a unified diff, focusing on "${sectionTitle}".`,
+    'If this feedback implies other parts of the spec should change, include those hunks too.',
+    patchContract(maxQuestions),
+  ].join('\n\n');
+}
+
+export function buildChatPrompt(
+  message: string,
+  maxQuestions: number,
+  context: SpecPromptContext,
+): string {
+  return [
+    'Continue the same interview.',
+    SPECIFICATION_TEMPLATE_GUIDELINE,
+    describeSpec(context),
+    'The user sent a freeform message via the dashboard chat panel:',
+    message,
+    'The request may add a section, revise content, or ask for clarifying questions.',
+    'Update the specification with a unified diff.',
+    patchContract(maxQuestions),
+  ].join('\n\n');
+}
+
+export function buildNudgePrompt(
+  action: 'more-questions' | 'confirm-complete',
+  maxQuestions: number,
+  context: SpecPromptContext,
+): string {
+  if (action === 'confirm-complete') {
+    return [
+      'You are finishing the interview.',
+      describeSpec(context),
+      'The user confirmed the interview spec is complete.',
+      'Produce a final, polished version of the full spec document as clean markdown.',
+      'Do NOT include any <interview_state> block.',
+      'The spec should be comprehensive, well-structured, and ready for implementation.',
+    ].join('\n\n');
+  }
+
+  return [
+    'Continue the same interview.',
+    SPECIFICATION_TEMPLATE_GUIDELINE,
+    describeSpec(context),
+    'The user reviewed the spec and wants more questions.',
+    `Ask up to ${maxQuestions} new clarifying questions about aspects that are still unclear or underspecified.`,
+    patchContract(maxQuestions),
+  ].join('\n\n');
+}
+
+export function buildPatchRepairPrompt(
+  failedHunk: string,
+  contextWindow: string,
+  maxQuestions: number,
+): string {
+  return [
+    'The previous spec patch did not apply.',
+    'Return one corrected unified diff of the current spec body.',
+    'Do not include frontmatter or Q&A history.',
+    'Failed hunk:',
+    failedHunk,
+    'Nearby spec lines:',
+    contextWindow,
+    patchContract(maxQuestions),
   ].join('\n\n');
 }

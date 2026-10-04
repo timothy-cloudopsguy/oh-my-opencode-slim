@@ -106,6 +106,19 @@ describe('parseAssistantState', () => {
     expect(result.state?.questions[0].options).toEqual(['A', 'B']);
   });
 
+  test('keeps a patch string and treats a missing patch as absent', () => {
+    const text =
+      '<interview_state>\n{"summary":"Updated scope","patch":"--- a/spec\\n+++ b/spec\\n@@ -1 +1 @@\\n-old\\n+new","questions":[]}\n</interview_state>';
+    const result = parseAssistantState(text);
+    expect(result.state?.summary).toBe('Updated scope');
+    expect(result.state?.patch).toContain('+++ b/spec');
+
+    const legacy = parseAssistantState(
+      '<interview_state>\n{"summary":"Full spec","questions":[]}\n</interview_state>',
+    );
+    expect(legacy.state?.patch).toBeUndefined();
+  });
+
   test('handles non-string summary gracefully', () => {
     const text =
       '<interview_state>\n{"summary":123,"questions":[]}\n</interview_state>';
