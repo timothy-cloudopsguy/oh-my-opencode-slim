@@ -189,18 +189,18 @@ export function createCommandRegistration(
   draft.add(definition);
 }
 
-/** Register the v1 synth commands on a v2 command draft. `interview` is
- * owned by the interview bridge's own registration (whose context hook owns
- * the interview marker), so it is skipped here — a duplicate `draft.add`
- * would break `/interview` on host builds that are first-wins or throw on
- * duplicates. */
+/** Register the v1 synth commands on a v2 command draft. `interview` and
+ * `implement` are owned by the interview bridge's own registration (whose
+ * context hook owns their markers), so they are skipped here — a duplicate
+ * `draft.add` would break those commands on host builds that are first-wins
+ * or throw on duplicates. */
 export function registerSynthCommands(
   draft: V2CommandDraft,
   entries: Array<[string, { description?: string }]>,
   submit: V2CommandSubmit,
 ): void {
   for (const [name, cmd] of entries) {
-    if (name === 'interview') continue; // owned by the interview bridge registration below
+    if (name === 'interview' || name === 'implement') continue;
     try {
       createCommandRegistration(draft, name, cmd, submit);
     } catch (err) {
@@ -2047,11 +2047,16 @@ export function createV2Setup(): (ctx: V2Context) => Promise<V2Cleanup> {
       const interviewConfig = InterviewConfigSchema.parse(
         pluginConfig.interview ?? {},
       );
+      const disabledCommands = new Set(pluginConfig.disabled_commands ?? []);
       const interviewCommandEnabled = isCommandEnabled('interview', {
-        disabledCommands: new Set(pluginConfig.disabled_commands ?? []),
+        disabledCommands,
+      });
+      const implementCommandEnabled = isCommandEnabled('implement', {
+        disabledCommands,
       });
       const interviewBridge = createV2InterviewBridge(ctx, interviewConfig, {
         commandEnabled: interviewCommandEnabled,
+        implementEnabled: implementCommandEnabled,
       });
       disposers.push(() => interviewBridge.dispose());
 
@@ -2421,7 +2426,7 @@ export function createV2Setup(): (ctx: V2Context) => Promise<V2Cleanup> {
       try {
         const reg = await ctx.command.transform((draft) => {
           try {
-            if (interviewCommandEnabled) {
+            if (interviewCommandEnabled || implementCommandEnabled) {
               interviewBridge.registerCommand(draft);
             }
           } catch (err) {

@@ -32,7 +32,10 @@ export function createInterviewManager(
     server?: Server;
   } = {},
 ): {
-  registerCommand: (config: Record<string, unknown>) => void;
+  registerCommand: (
+    config: Record<string, unknown>,
+    enabled?: { interview?: boolean; implement?: boolean },
+  ) => void;
   handleCommandExecuteBefore: (
     input: { command: string; sessionID: string; arguments: string },
     output: { parts: Array<{ type: string; text?: string }> },

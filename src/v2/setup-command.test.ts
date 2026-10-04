@@ -197,6 +197,7 @@ describe('registerSynthCommands (generic loop skips bridge-owned interview)', ()
       draft,
       [
         ['interview', { description: 'Open a localhost interview UI' }],
+        ['implement', { description: 'Read the completed interview markdown' }],
         ['deepwork', { description: 'Start a deep work block' }],
       ],
       async () => {},
@@ -205,7 +206,11 @@ describe('registerSynthCommands (generic loop skips bridge-owned interview)', ()
 
     const bridge = createV2InterviewBridge({ session: {} } as never, undefined);
     bridge.registerCommand(draft);
-    expect(added.map((def) => def.name)).toEqual(['deepwork', 'interview']);
+    expect(added.map((def) => def.name)).toEqual([
+      'deepwork',
+      'interview',
+      'implement',
+    ]);
     bridge.dispose();
   });
 
@@ -273,7 +278,7 @@ describe('interview registerCommand (add-only draft)', () => {
     const added: V2CommandDefinition[] = [];
     bridge.registerCommand({ add: (def) => added.push(def) });
 
-    expect(added).toHaveLength(1);
+    expect(added).toHaveLength(2);
     expect(added[0]?.name).toBe('interview');
     expect(added[0]?.description).toBe(
       'Open a localhost interview UI for a feature idea',
@@ -400,7 +405,13 @@ describe('createSessionContextHandler (merged context hook seam)', () => {
     const synthetic = mock(async () => ({}));
     const rename = mock(async () => ({}));
     const bridge = createV2InterviewBridge(
-      { session: { synthetic, rename } } as never,
+      {
+        session: {
+          synthetic,
+          rename,
+          create: mock(async () => ({ id: 'side-session' })),
+        },
+      } as never,
       { outputFolder: directory } as never,
     );
     const { calls, hook } = recordCommandCalls();

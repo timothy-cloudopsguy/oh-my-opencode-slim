@@ -18,6 +18,7 @@ function createContext(overrides?: {
       synthetic: overrides?.synthetic,
       update: overrides?.update,
       prompt: overrides?.prompt,
+      create: mock(async () => ({ id: 'side-session' })),
     },
   };
 }
@@ -68,6 +69,10 @@ describe('v2 interview bridge', () => {
       {
         name: 'interview',
         description: 'Open a localhost interview UI for a feature idea',
+      },
+      {
+        name: 'implement',
+        description: 'Read the completed interview markdown and implement it',
       },
     ]);
 

@@ -20,17 +20,27 @@ import type {
 export const INTERVIEW_COMMAND_MARKER =
   '<omos-interview-command>$ARGUMENTS</omos-interview-command>';
 
+export const IMPLEMENT_COMMAND_MARKER =
+  '<omos-implement-command>$ARGUMENTS</omos-implement-command>';
+
 // Whole-text anchored: v2 writes the marker as the entire submitted prompt,
 // so whole-text anchoring is the contract. A user-typed embedded marker must
 // not hijack dispatch in the merged session context hook.
-const MARKER_PATTERN =
+const INTERVIEW_MARKER_PATTERN =
   /^\s*<omos-interview-command>\s*([\s\S]*?)\s*<\/omos-interview-command>\s*$/;
+const IMPLEMENT_MARKER_PATTERN =
+  /^\s*<omos-implement-command>\s*([\s\S]*?)\s*<\/omos-implement-command>\s*$/;
 
 /** Render the `/interview` command marker with the given arguments. */
 export function markerText(args: string): string {
   // Function replacer: a string replacer would interpret `$`-sequences in
   // args (`$&`, `` $` ``, `$$`, ...) instead of emitting them byte-exact.
   return INTERVIEW_COMMAND_MARKER.replace('$ARGUMENTS', () => args);
+}
+
+/** Render the `/implement` command marker with the given arguments. */
+export function implementMarkerText(args: string): string {
+  return IMPLEMENT_COMMAND_MARKER.replace('$ARGUMENTS', () => args);
 }
 
 function toInterviewMessages(event: V2SessionContextEvent): InterviewMessage[] {
@@ -70,7 +80,9 @@ export function applyInterviewCommandParts(
     {
       type: 'text',
       // Function replacer: a string replacer would interpret `$`-sequences.
-      text: text.replace(MARKER_PATTERN, (_match, args: string) => args),
+      text: text
+        .replace(INTERVIEW_MARKER_PATTERN, (_match, args: string) => args)
+        .replace(IMPLEMENT_MARKER_PATTERN, (_match, args: string) => args),
     },
   ];
 }
@@ -81,6 +93,8 @@ export function createV2InterviewBridge(
   options: {
     /** Whether the /interview command is enabled for this host. */
     commandEnabled?: boolean;
+    /** Whether the /implement command is enabled for this host. */
+    implementEnabled?: boolean;
     /** Already-listening server for the dashboard role to adopt. */
     server?: Server;
   } = {},
@@ -192,21 +206,42 @@ export function createV2InterviewBridge(
       log('[v2][interview] command draft has no add');
       return;
     }
-    draft.add({
-      name: 'interview',
-      description: 'Open a localhost interview UI for a feature idea',
-      execute: async (invocation) => {
-        // Never throw: v2 surfaces command execution errors to the user.
-        try {
-          await submitUserText(
-            invocation?.sessionID ?? '',
-            markerText(invocation?.prompt?.text ?? ''),
-          );
-        } catch (err) {
-          log('[v2][interview] command execute failed', String(err));
-        }
-      },
-    });
+    if (options.commandEnabled !== false) {
+      draft.add({
+        name: 'interview',
+        description: 'Open a localhost interview UI for a feature idea',
+        execute: async (invocation) => {
+          // Never throw: v2 surfaces command execution errors to the user.
+          try {
+            await submitUserText(
+              invocation?.sessionID ?? '',
+              markerText(invocation?.prompt?.text ?? ''),
+            );
+          } catch (err) {
+            log('[v2][interview] command execute failed', String(err));
+          }
+        },
+      });
+    }
+    if (options.implementEnabled !== false) {
+      draft.add({
+        name: 'implement',
+        description: 'Read the completed interview markdown and implement it',
+        execute: async (invocation) => {
+          try {
+            await submitUserText(
+              invocation?.sessionID ?? '',
+              implementMarkerText(invocation?.prompt?.text ?? ''),
+            );
+          } catch (err) {
+            log(
+              '[v2][interview] implement command execute failed',
+              String(err),
+            );
+          }
+        },
+      });
+    }
   }
 
   function isManagedInterviewSession(sessionID: string): boolean {
@@ -222,10 +257,11 @@ export function createV2InterviewBridge(
     const trailing = event.messages.at(-1);
     const text =
       trailing?.role === 'user' ? textFromContent(trailing.content) : '';
-    const match = text.match(MARKER_PATTERN);
-    if (match && options.commandEnabled === false) {
-      return;
-    }
+    const interviewMatch = text.match(INTERVIEW_MARKER_PATTERN);
+    const implementMatch = text.match(IMPLEMENT_MARKER_PATTERN);
+    if (interviewMatch && options.commandEnabled === false) return;
+    if (implementMatch && options.implementEnabled === false) return;
+    const match = interviewMatch ?? implementMatch;
     const managed = isManagedInterviewSession(event.sessionID);
     if (!match && !managed) return;
 
@@ -244,7 +280,7 @@ export function createV2InterviewBridge(
     };
     await (dashboardManager ?? service).handleCommandExecuteBefore(
       {
-        command: 'interview',
+        command: interviewMatch ? 'interview' : 'implement',
         sessionID: event.sessionID,
         arguments: match[1].trim(),
       },

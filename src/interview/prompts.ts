@@ -245,6 +245,33 @@ export function buildNudgePrompt(
   ].join('\n\n');
 }
 
+export function buildImplementPrompt(relativePath: string): string {
+  return [
+    'The specification is complete.',
+    `Specification file: ${relativePath}`,
+    'Read that file. Implement the markdown under "## Current spec".',
+    'Ignore YAML frontmatter and the "## Q&A history" section.',
+    'Do not reprint the specification.',
+    'Do not include an interview state block.',
+  ].join('\n');
+}
+
+export function buildImplementRefusalPrompt(): string {
+  return [
+    'The interview still has open questions.',
+    'Finish them in the browser before implementing.',
+    'Reply with that sentence only. Do not implement anything.',
+  ].join('\n');
+}
+
+export function buildImplementMissingPrompt(): string {
+  return [
+    'No completed interview spec was found.',
+    'Run /interview or pass a markdown path to /implement.',
+    'Reply with that sentence only. Do not implement anything.',
+  ].join('\n');
+}
+
 export function buildPatchRepairPrompt(
   failedHunk: string,
   contextWindow: string,

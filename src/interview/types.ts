@@ -49,6 +49,8 @@ export interface InterviewRecord {
   abandonedAt?: string;
   abandonedOrder?: number;
   status: 'active' | 'abandoned';
+  /** Set when the user finishes. The file on disk is the plan. */
+  completed?: boolean;
   baseMessageCount: number;
 }
 

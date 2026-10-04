@@ -1,10 +1,7 @@
-import { parseInterviewStateJson } from './parser';
+import { locateInterviewStateBlocks, parseInterviewStateJson } from './parser';
 
 export const INTERVIEW_SUMMARY_STUB =
   'Previous spec omitted. The current spec is on disk.';
-
-const INTERVIEW_BLOCK_REGEX =
-  /<interview_state>\s*([\s\S]*?)\s*<\/interview_state>/gi;
 
 type TextPart = { text: string };
 
@@ -16,19 +13,12 @@ type BlockLocation = {
 };
 
 function collectBlocks(part: TextPart): BlockLocation[] {
-  const locations: BlockLocation[] = [];
-  for (const match of part.text.matchAll(INTERVIEW_BLOCK_REGEX)) {
-    if (match.index === undefined) {
-      continue;
-    }
-    locations.push({
-      part,
-      start: match.index,
-      end: match.index + match[0].length,
-      json: match[1] ?? '',
-    });
-  }
-  return locations;
+  return locateInterviewStateBlocks(part.text).map((block) => ({
+    part,
+    start: block.start,
+    end: block.end,
+    json: block.json,
+  }));
 }
 
 function stubBlock(json: string): string {

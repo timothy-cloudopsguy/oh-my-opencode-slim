@@ -1714,8 +1714,14 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
         disabledCommands: runtime.disabledCommands,
         disabledSkills: runtime.disabledSkills,
       };
-      if (isCommandEnabled('interview', commandGate)) {
-        interviewManager.registerCommand(opencodeConfig);
+      if (
+        isCommandEnabled('interview', commandGate) ||
+        isCommandEnabled('implement', commandGate)
+      ) {
+        interviewManager.registerCommand(opencodeConfig, {
+          interview: isCommandEnabled('interview', commandGate),
+          implement: isCommandEnabled('implement', commandGate),
+        });
       }
       if (isCommandEnabled('deepwork', commandGate)) {
         deepworkCommandHook.registerCommand(opencodeConfig);
@@ -2388,7 +2394,11 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
           disabledSkills: runtime.disabledSkills,
         });
 
-      if (commandEnabled('interview')) {
+      const slashCommand = (input as { command?: string }).command;
+      if (
+        (slashCommand === 'interview' && commandEnabled('interview')) ||
+        (slashCommand === 'implement' && commandEnabled('implement'))
+      ) {
         await interviewManager.handleCommandExecuteBefore(
           input as {
             command: string;

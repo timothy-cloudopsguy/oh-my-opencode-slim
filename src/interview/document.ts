@@ -157,6 +157,7 @@ function buildInterviewFrontmatter(
   owner = 'agent',
   tags = ['spec', 'diagnostic'],
   consumedState?: string,
+  status?: string,
 ): string {
   const now = new Date();
   const dateStr = now.toISOString().split('T')[0];
@@ -170,9 +171,15 @@ function buildInterviewFrontmatter(
     `owner: ${owner}`,
     `tags: [${tags.join(', ')}]`,
     ...(consumedState ? [`consumedState: ${consumedState}`] : []),
+    ...(status ? [`status: ${status}`] : []),
     '---',
     '',
   ].join('\n');
+}
+
+/** The session that owns the file. */
+export function interviewOwnerSessionID(record: InterviewRecord): string {
+  return record.sessionID;
 }
 
 /** Hash of one assistant interview_state turn. Empty patches stay distinct. */
@@ -376,6 +383,7 @@ export function buildInterviewDocument(
     owner?: string;
     tags?: string[];
     consumedState?: string;
+    status?: string;
   },
 ): string {
   const normalizedSummary = summary.trim() || 'Waiting for interview answers.';
@@ -391,6 +399,7 @@ export function buildInterviewDocument(
         owner,
         tags,
         meta.consumedState,
+        meta.status,
       )
     : '';
 
@@ -420,7 +429,7 @@ export async function ensureInterviewFile(
     await fs.writeFile(
       record.markdownPath,
       buildInterviewDocument(record.idea, '', '', {
-        sessionID: record.sessionID,
+        sessionID: interviewOwnerSessionID(record),
         baseMessageCount: record.baseMessageCount,
       }),
       { encoding: 'utf8', flag: 'wx' },
@@ -476,9 +485,31 @@ export async function rewriteInterviewDocument(
     nextSummary,
     history,
     {
-      sessionID: record.sessionID,
+      sessionID: interviewOwnerSessionID(record),
       baseMessageCount: record.baseMessageCount,
       consumedState: consumedState ?? parseFrontmatter(existing)?.consumedState,
+      status: parseFrontmatter(existing)?.status,
+    },
+  );
+  await fs.writeFile(record.markdownPath, next, 'utf8');
+  return next;
+}
+
+/** Mark the file finished without rewriting the spec body. */
+export async function markInterviewDocumentComplete(
+  record: InterviewRecord,
+): Promise<string> {
+  const existing = await readInterviewDocument(record);
+  const frontmatter = parseFrontmatter(existing);
+  const next = buildInterviewDocument(
+    extractTitle(existing) || record.idea,
+    extractSummarySection(existing),
+    extractHistorySection(existing),
+    {
+      sessionID: interviewOwnerSessionID(record),
+      baseMessageCount: record.baseMessageCount,
+      consumedState: frontmatter?.consumedState,
+      status: 'complete',
     },
   );
   await fs.writeFile(record.markdownPath, next, 'utf8');
@@ -551,9 +582,10 @@ export async function appendInterviewAnswers(
       summary,
       nextHistory,
       {
-        sessionID: record.sessionID,
+        sessionID: interviewOwnerSessionID(record),
         baseMessageCount: record.baseMessageCount,
         consumedState: parseFrontmatter(existing)?.consumedState,
+        status: parseFrontmatter(existing)?.status,
       },
     ),
     'utf8',

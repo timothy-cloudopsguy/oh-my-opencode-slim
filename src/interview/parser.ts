@@ -5,8 +5,57 @@ import type {
 } from './types';
 import { RawInterviewStateSchema, RawQuestionSchema } from './types';
 
-const INTERVIEW_BLOCK_REGEX =
-  /<interview_state>\s*([\s\S]*?)\s*<\/interview_state>/i;
+const OPEN_TAG = '<interview_state>';
+const CLOSE_TAG = '</interview_state>';
+
+export interface InterviewStateBlock {
+  start: number;
+  end: number;
+  json: string;
+}
+
+/**
+ * Every block whose body parses. A preface that merely mentions the opening
+ * tag is skipped, so the mention does not swallow the real block that follows.
+ */
+export function locateInterviewStateBlocks(
+  text: string,
+): InterviewStateBlock[] {
+  const lower = text.toLowerCase();
+  const blocks: InterviewStateBlock[] = [];
+  let cursor = 0;
+  while (cursor < lower.length) {
+    const start = lower.indexOf(OPEN_TAG, cursor);
+    if (start < 0) {
+      break;
+    }
+    const contentStart = start + OPEN_TAG.length;
+    let closeSearch = contentStart;
+    let matched = false;
+    while (closeSearch < lower.length) {
+      const close = lower.indexOf(CLOSE_TAG, closeSearch);
+      if (close < 0) {
+        break;
+      }
+      const json = text.slice(contentStart, close).trim();
+      if (parseInterviewStateJson(json)) {
+        blocks.push({
+          start,
+          end: close + CLOSE_TAG.length,
+          json,
+        });
+        cursor = close + CLOSE_TAG.length;
+        matched = true;
+        break;
+      }
+      closeSearch = close + 1;
+    }
+    if (!matched) {
+      cursor = contentStart;
+    }
+  }
+  return blocks;
+}
 
 function normalizeQuestion(
   value: unknown,
@@ -127,17 +176,17 @@ export function parseAssistantState(
   state: InterviewAssistantState | null;
   error?: string;
 } {
-  const match = text.match(INTERVIEW_BLOCK_REGEX);
-  if (!match) {
-    return { state: null };
-  }
-
-  const parsed = parseInterviewStateJson(match[1]);
+  const blocks = locateInterviewStateBlocks(text);
+  const parsed = parseInterviewStateJson(blocks[blocks.length - 1]?.json ?? '');
   if (!parsed) {
-    return {
-      state: null,
-      error: 'Failed to parse interview state',
-    };
+    const lower = text.toLowerCase();
+    if (lower.includes(OPEN_TAG) && lower.includes(CLOSE_TAG)) {
+      return {
+        state: null,
+        error: 'Failed to parse interview state',
+      };
+    }
+    return { state: null };
   }
 
   try {

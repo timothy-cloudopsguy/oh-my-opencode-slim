@@ -23,6 +23,7 @@ import {
   hashInterviewState,
   InterviewDocumentOwnershipError,
   InterviewPatchApplyError,
+  markInterviewDocumentComplete,
   normalizeOutputFolder,
   parseFrontmatter,
   parseSpecBlocks,
@@ -42,6 +43,9 @@ import {
   buildAnswerPrompt,
   buildBlockCommentPrompt,
   buildChatPrompt,
+  buildImplementMissingPrompt,
+  buildImplementPrompt,
+  buildImplementRefusalPrompt,
   buildKickoffPrompt,
   buildNudgePrompt,
   buildPatchRepairPrompt,
@@ -62,6 +66,7 @@ import type {
 } from './types';
 
 const COMMAND_NAME = 'interview';
+const IMPLEMENT_COMMAND = 'implement';
 const DEFAULT_MAX_QUESTIONS = 2;
 
 /**
@@ -158,7 +163,10 @@ export function createInterviewService(
     callback: (interview: InterviewRecord) => void,
   ) => void;
   getActiveInterviewId: (sessionID: string) => string | null;
-  registerCommand: (config: Record<string, unknown>) => void;
+  registerCommand: (
+    config: Record<string, unknown>,
+    enabled?: { interview?: boolean; implement?: boolean },
+  ) => void;
   handleCommandExecuteBefore: (
     input: { command: string; sessionID: string; arguments: string },
     output: {
@@ -308,6 +316,15 @@ export function createInterviewService(
     pruneAbandonedInterviews();
   }
 
+  function bindInterview(record: InterviewRecord): void {
+    activeInterviewIds.set(record.sessionID, record.id);
+    interviewsById.set(record.id, record);
+    fileCache = null;
+    if (onInterviewCreated) {
+      onInterviewCreated(record);
+    }
+  }
+
   function pruneAbandonedInterviews(): void {
     const abandoned = [...interviewsById.values()].filter(
       (record) => record.status === 'abandoned',
@@ -366,13 +383,7 @@ export function createInterviewService(
     await withInterviewDocumentLock(record.markdownPath, () =>
       ensureInterviewFile(record),
     );
-    activeInterviewIds.set(sessionID, record.id);
-    interviewsById.set(record.id, record);
-    fileCache = null;
-
-    if (onInterviewCreated) {
-      onInterviewCreated(record);
-    }
+    bindInterview(record);
     return record;
   }
 
@@ -406,16 +417,11 @@ export function createInterviewService(
       markdownPath,
       createdAt: nowIso(),
       status: 'active',
+      completed: parseFrontmatter(document)?.status === 'complete',
       baseMessageCount: messages.length,
     };
 
-    activeInterviewIds.set(sessionID, record.id);
-    interviewsById.set(record.id, record);
-    fileCache = null;
-
-    if (onInterviewCreated) {
-      onInterviewCreated(record);
-    }
+    bindInterview(record);
     return record;
   }
 
@@ -541,25 +547,27 @@ export function createInterviewService(
       mode:
         interview.status === 'abandoned'
           ? 'abandoned'
-          : parsed.state && state.questions.length === 0
+          : interview.completed
             ? 'completed'
-            : sessionBusy.get(interview.sessionID) === true
-              ? 'awaiting-agent'
-              : state.questions.length > 0
-                ? 'awaiting-user'
-                : parsed.latestAssistantError
-                  ? 'error'
-                  : // An empty WHOLE-transcript read (impossible on v1
-                    // runtimes; reachable on v2 only via bridge retention
-                    // loss) must not read as 'completed' — the answer form
-                    // would vanish for a live interview. Keyed on
-                    // allMessages, NOT interviewMessages: an empty
-                    // post-base slice legitimately awaits the first answer.
-                    !parsed.state &&
-                      allMessages.length > 0 &&
-                      sessionBusy.get(interview.sessionID) === false
-                    ? 'completed'
-                    : 'awaiting-agent',
+            : parsed.state && state.questions.length === 0
+              ? 'completed'
+              : sessionBusy.get(interview.sessionID) === true
+                ? 'awaiting-agent'
+                : state.questions.length > 0
+                  ? 'awaiting-user'
+                  : parsed.latestAssistantError
+                    ? 'error'
+                    : // An empty WHOLE-transcript read (impossible on v1
+                      // runtimes; reachable on v2 only via bridge retention
+                      // loss) must not read as 'completed' — the answer form
+                      // would vanish for a live interview. Keyed on
+                      // allMessages, NOT interviewMessages: an empty
+                      // post-base slice legitimately awaits the first answer.
+                      !parsed.state &&
+                        allMessages.length > 0 &&
+                        sessionBusy.get(interview.sessionID) === false
+                      ? 'completed'
+                      : 'awaiting-agent',
       lastParseError: repairExhausted
         ? 'The spec patch did not apply.'
         : parsed.latestAssistantError,
@@ -581,7 +589,7 @@ export function createInterviewService(
   async function notifyInterviewUrl(
     sessionID: string,
     interview: InterviewRecord,
-  ): Promise<void> {
+  ): Promise<string> {
     const baseUrl = await ensureServer();
     const url = `${baseUrl}/interview/${interview.id}`;
 
@@ -599,20 +607,33 @@ export function createInterviewService(
         '[system status: continue without acknowledging this notification]',
       ].join('\n'),
     );
+    return url;
   }
 
-  function registerCommand(opencodeConfig: Record<string, unknown>): void {
+  function registerCommand(
+    opencodeConfig: Record<string, unknown>,
+    enabled?: { interview?: boolean; implement?: boolean },
+  ): void {
+    const interviewOn = enabled?.interview !== false;
+    const implementOn = enabled?.implement !== false;
     const configCommand = opencodeConfig.command as
       | Record<string, unknown>
       | undefined;
-    if (!configCommand?.[COMMAND_NAME]) {
-      if (!opencodeConfig.command) {
-        opencodeConfig.command = {};
-      }
-      (opencodeConfig.command as Record<string, unknown>)[COMMAND_NAME] = {
+    if (!opencodeConfig.command) {
+      opencodeConfig.command = {};
+    }
+    const commands = opencodeConfig.command as Record<string, unknown>;
+    if (interviewOn && !configCommand?.[COMMAND_NAME]) {
+      commands[COMMAND_NAME] = {
         template: 'Start an interview and write a live markdown spec',
         description:
           'Open a localhost interview UI linked to the current OpenCode session',
+      };
+    }
+    if (implementOn && !configCommand?.[IMPLEMENT_COMMAND]) {
+      commands[IMPLEMENT_COMMAND] = {
+        template: 'Implement the completed interview spec',
+        description: 'Read the completed interview markdown and implement it',
       };
     }
   }
@@ -720,6 +741,10 @@ export function createInterviewService(
     input: { command: string; sessionID: string; arguments: string },
     output: { parts: Array<{ type: string; text?: string }> },
   ): Promise<void> {
+    if (input.command === IMPLEMENT_COMMAND) {
+      await handleImplement(input.sessionID, input.arguments, output);
+      return;
+    }
     if (input.command !== COMMAND_NAME) {
       return;
     }
@@ -787,8 +812,6 @@ export function createInterviewService(
       createInternalAgentTextPart(buildKickoffPrompt(idea, maxQuestions)),
     );
 
-    // best-effort: rename the session so it's identifiable in the session list.
-    // never block interview creation if the rename fails.
     let sessionTitle = `Interview: ${idea}`;
     if (sessionTitle.length > 50) {
       sessionTitle = `${sessionTitle.slice(0, 49)}…`;
@@ -806,12 +829,14 @@ export function createInterviewService(
       const sessionID = properties.sessionID as string | undefined;
       const status = properties.status as { type?: string } | undefined;
       if (sessionID) {
+        const interviewId = activeInterviewIds.get(sessionID);
         sessionBusy.set(sessionID, status?.type === 'busy');
-        if (status?.type === 'idle') {
-          const interviewId = activeInterviewIds.get(sessionID);
-          if (interviewId && finalizationPending.has(interviewId)) {
-            finalizationReady.add(interviewId);
-          }
+        if (
+          status?.type === 'idle' &&
+          interviewId &&
+          finalizationPending.has(interviewId)
+        ) {
+          finalizationReady.add(interviewId);
         }
       }
       return;
@@ -1050,6 +1075,21 @@ export function createInterviewService(
       );
     }
 
+    if (action === 'confirm-complete') {
+      interview.completed = true;
+      await markInterviewDocumentComplete(interview);
+      const relativePath = relativeInterviewPath(
+        ctx.directory,
+        interview.markdownPath,
+      );
+      await sessionRuntime.notify(
+        interview.sessionID,
+        `The spec is complete. Follow ${relativePath}.`,
+      );
+      await getInterviewState(interviewId);
+      return;
+    }
+
     sessionBusy.set(interview.sessionID, true);
     let promptSent = false;
 
@@ -1063,10 +1103,6 @@ export function createInterviewService(
       );
 
       const model = sessionModel.get(interview.sessionID);
-      if (action === 'confirm-complete') {
-        finalizationPending.add(interview.id);
-        finalizationReady.delete(interview.id);
-      }
       await sessionRuntime.continue(
         interview.sessionID,
         prompt,
@@ -1075,13 +1111,100 @@ export function createInterviewService(
       promptSent = true;
     } finally {
       if (!promptSent) {
-        if (action === 'confirm-complete') {
-          finalizationPending.delete(interview.id);
-          finalizationReady.delete(interview.id);
-        }
         sessionBusy.set(interview.sessionID, false);
       }
     }
+  }
+
+  async function newestCompleteSpec(): Promise<string | null> {
+    const outputDir = createInterviewDirectoryPath(ctx.directory, outputFolder);
+    let entries: string[];
+    try {
+      entries = await fs.readdir(outputDir);
+    } catch {
+      return null;
+    }
+    let best: { filePath: string; mtime: number } | null = null;
+    for (const entry of entries) {
+      if (!entry.endsWith('.md')) continue;
+      const filePath = path.join(outputDir, entry);
+      try {
+        const [content, stat] = await Promise.all([
+          fs.readFile(filePath, 'utf8'),
+          fs.stat(filePath),
+        ]);
+        if (parseFrontmatter(content)?.status !== 'complete') continue;
+        if (!best || stat.mtimeMs > best.mtime) {
+          best = { filePath, mtime: stat.mtimeMs };
+        }
+      } catch {}
+    }
+    return best?.filePath ?? null;
+  }
+
+  async function handleImplement(
+    visibleSessionID: string,
+    argument: string,
+    output: { parts: Array<{ type: string; text?: string }> },
+  ): Promise<void> {
+    output.parts.length = 0;
+    const requested = argument.trim();
+    let markdownPath: string | null = null;
+    if (requested) {
+      markdownPath = resolveExistingInterviewPath(
+        ctx.directory,
+        outputFolder,
+        requested,
+      );
+    } else {
+      const activeId = activeInterviewIds.get(visibleSessionID);
+      const active = activeId ? interviewsById.get(activeId) : undefined;
+      markdownPath =
+        active && active.status === 'active'
+          ? active.markdownPath
+          : await newestCompleteSpec();
+    }
+    if (!markdownPath) {
+      output.parts.push(
+        createInternalAgentTextPart(buildImplementMissingPrompt()),
+      );
+      return;
+    }
+
+    const active = [...interviewsById.values()].find(
+      (record) =>
+        record.status === 'active' &&
+        path.resolve(record.markdownPath) === path.resolve(markdownPath),
+    );
+    if (active && !active.completed) {
+      const state = await getInterviewState(active.id);
+      const fileComplete =
+        parseFrontmatter(state.document)?.status === 'complete';
+      if (!fileComplete && state.questions.length > 0) {
+        output.parts.push(
+          createInternalAgentTextPart(buildImplementRefusalPrompt()),
+        );
+        return;
+      }
+      const body = extractSummarySection(state.document);
+      if (
+        !fileComplete &&
+        (!body || body === 'Waiting for interview answers.')
+      ) {
+        output.parts.push(
+          createInternalAgentTextPart(buildImplementMissingPrompt()),
+        );
+        return;
+      }
+    }
+
+    output.parts.push(
+      createInternalAgentTextPart(
+        buildImplementPrompt(
+          relativeInterviewPath(ctx.directory, markdownPath),
+        ),
+      ),
+    );
   }
 
   return {

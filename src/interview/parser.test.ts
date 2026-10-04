@@ -30,6 +30,34 @@ describe('parseAssistantState', () => {
     expect(result.state?.title).toBe('my-project');
   });
 
+  test('ignores a preface that mentions the opening tag', () => {
+    const text = [
+      'The full `<interview_state>` block is for the parser.',
+      '<interview_state>',
+      '{"summary":"Spec mentions <interview_state> inside the summary.","questions":[{"id":"q-1","question":"Which?","options":["A","B"]}]}',
+      '</interview_state>',
+    ].join('\n');
+    const result = parseAssistantState(text, 2);
+
+    expect(result.error).toBeUndefined();
+    expect(result.state?.summary).toContain('inside the summary');
+    expect(result.state?.questions).toHaveLength(1);
+    expect(result.state?.questions[0].id).toBe('q-1');
+  });
+
+  test('keeps the real block when the summary quotes a full tag pair', () => {
+    const text = [
+      'The full `<interview_state>` block is for the parser.',
+      '<interview_state>',
+      '{"summary":"the `<interview_state>{json}</interview_state>` block","questions":[{"id":"q-1","question":"Which?","options":["A","B"]}]}',
+      '</interview_state>',
+    ].join('\n');
+    const result = parseAssistantState(text, 2);
+
+    expect(result.error).toBeUndefined();
+    expect(result.state?.questions[0].id).toBe('q-1');
+  });
+
   test('returns null when no interview_state block', () => {
     const result = parseAssistantState('No state block here.');
     expect(result.state).toBeNull();
