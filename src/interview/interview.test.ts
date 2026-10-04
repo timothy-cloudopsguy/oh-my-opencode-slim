@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import * as path from 'node:path';
 import { InterviewConfigSchema } from '../config/schema';
 import { INTERNAL_INITIATOR_METADATA_KEY } from '../utils';
+import { TOOL_FALLBACK_HINT } from './prompts';
 import { createInterviewServer } from './server';
 import {
   createInterviewService as createRealInterviewService,
@@ -764,6 +765,39 @@ describe('interview service', () => {
 
       expect(output.parts).toHaveLength(1);
       expect(output.parts[0].text).toContain('Ask them for the product idea');
+
+      await fs.rm(tempDir, { recursive: true, force: true });
+    });
+
+    test('/interview reopen instruction includes the tool fallback hint in non-verbose mode', async () => {
+      const tempDir = await fs.mkdtemp('/tmp/interview-test-');
+      const ctx = createMockContext({ directory: tempDir });
+
+      const service = createInterviewService(ctx);
+      service.setBaseUrlResolver(async () => 'http://localhost:9999');
+      const sessionID = 'session-reopen-hint';
+
+      const createOutput = {
+        parts: [] as Array<{ type: string; text?: string }>,
+      };
+      await service.handleCommandExecuteBefore(
+        { command: 'interview', sessionID, arguments: 'Reopen Hint Test' },
+        createOutput,
+      );
+
+      const reopenOutput = {
+        parts: [] as Array<{ type: string; text?: string }>,
+      };
+      await service.handleCommandExecuteBefore(
+        { command: 'interview', sessionID, arguments: '' },
+        reopenOutput,
+      );
+
+      const reopenedInstruction = extractOutputText(reopenOutput);
+      expect(reopenedInstruction).toContain(
+        'The interview UI was reopened for the current session.',
+      );
+      expect(reopenedInstruction).toContain(TOOL_FALLBACK_HINT);
 
       await fs.rm(tempDir, { recursive: true, force: true });
     });

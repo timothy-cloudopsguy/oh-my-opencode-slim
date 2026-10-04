@@ -475,6 +475,12 @@ export const InterviewConfigSchema = z.object({
     ),
   port: z.number().int().min(0).max(65535).default(0),
   dashboard: z.boolean().default(false),
+  verbose: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Opt-in debug mode. When true, the interview model prints the full <interview_state> block in the TUI (legacy behavior) instead of using the quiet submit-tool path.',
+    ),
 });
 
 export type InterviewConfig = z.infer<typeof InterviewConfigSchema>;

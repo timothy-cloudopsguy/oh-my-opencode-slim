@@ -640,6 +640,7 @@ function applyDefaultPermissions(
   agent: AgentDefinition,
   configuredSkills?: readonly string[],
   disabledSkills?: readonly string[],
+  isPrimaryAgent = false,
 ): void {
   // A shorthand string is a user-level rule for every tool. Keep its original
   // form; marketplace tools independently fail closed through their caller
@@ -668,6 +669,13 @@ function applyDefaultPermissions(
       existing[toolName] ?? (agent.name === 'orchestrator' ? 'allow' : 'deny'),
     ]),
   );
+  // The interview submit tool follows agent mode, not the orchestrator
+  // allowlist: any primary (non-subagent) agent may save interview state,
+  // while subagents stay denied. Subagents cannot run a user-facing
+  // interview, and non-verbose prompts forbid printing the block, so denying
+  // them would silently lose state.
+  const interviewSubmitPermission =
+    existing.interview_submit_state ?? (isPrimaryAgent ? 'allow' : 'deny');
   const waitForUserPerm =
     agent.name === 'orchestrator'
       ? (existing.wait_for_user ?? 'allow')
@@ -690,6 +698,7 @@ function applyDefaultPermissions(
     ...existing,
     question: questionPerm,
     ...orchestratorDefaultPermissions,
+    interview_submit_state: interviewSubmitPermission,
     wait_for_user: waitForUserPerm,
     ...marketplacePermissions,
     // Apply skill permissions as nested object under 'skill' key
@@ -990,6 +999,7 @@ export function createAgents(
     orchestrator,
     orchestratorOverride?.skills,
     runtime.disabledSkills,
+    true,
   );
 
   // Collect all display names from orchestrator and all subagents

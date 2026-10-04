@@ -101,6 +101,7 @@ export function createV2InterviewBridge(
 ): V2InterviewBridge {
   const transcripts = new Map<string, InterviewMessage[]>();
   const activeText = new Map<string, string>();
+  const activeMessageIDs = new Map<string, string>();
   // Reduced hosts may omit the session domain entirely.
   const methods = (ctx.session ?? {}) as V2Session;
   const submitUserText = createSessionSubmit(ctx);
@@ -291,10 +292,15 @@ export function createV2InterviewBridge(
     transcripts.set(event.sessionID, toInterviewMessages(event));
   }
 
-  function appendText(sessionID: string, text: string): void {
+  function appendText(
+    sessionID: string,
+    text: string,
+    messageID?: string,
+  ): void {
     const messages = transcripts.get(sessionID) ?? [];
     const last = messages.at(-1);
     if (last?.info?.role === 'assistant') {
+      if (messageID) last.info = { ...last.info, id: messageID };
       const part = last.parts?.find((item) => item.type === 'text');
       if (part) {
         part.text = text;
@@ -303,20 +309,38 @@ export function createV2InterviewBridge(
       }
     } else {
       messages.push({
-        info: { role: 'assistant' },
+        info: { role: 'assistant', ...(messageID ? { id: messageID } : {}) },
         parts: [{ type: 'text', text }],
       });
     }
     transcripts.set(sessionID, messages);
   }
 
-  function beginText(sessionID: string): void {
+  function beginText(sessionID: string, messageID?: string): void {
     const messages = transcripts.get(sessionID) ?? [];
     messages.push({
-      info: { role: 'assistant' },
+      info: { role: 'assistant', ...(messageID ? { id: messageID } : {}) },
       parts: [{ type: 'text', text: '' }],
     });
     transcripts.set(sessionID, messages);
+  }
+
+  /** Resolve the assistant message id carried by a v2 text event, when the
+   * host surfaces one (live payloads vary: messageID/info.id/message.id). */
+  function textMessageID(
+    properties: Record<string, unknown>,
+  ): string | undefined {
+    const direct = properties.messageID;
+    if (typeof direct === 'string' && direct) return direct;
+    const info = isRecord(properties.info) ? properties.info : undefined;
+    if (info && typeof info.id === 'string' && info.id) return info.id;
+    const message = isRecord(properties.message)
+      ? properties.message
+      : undefined;
+    if (message && typeof message.id === 'string' && message.id) {
+      return message.id;
+    }
+    return undefined;
   }
 
   async function handleEvent(event: Record<string, unknown>): Promise<void> {
@@ -338,15 +362,21 @@ export function createV2InterviewBridge(
     const managed = isManagedInterviewSession(sessionID);
     if (type === 'session.next.text.started') {
       if (!managed) return;
+      const messageID = textMessageID(properties);
       activeText.set(sessionID, '');
-      beginText(sessionID);
+      if (messageID) activeMessageIDs.set(sessionID, messageID);
+      beginText(sessionID, messageID);
       return;
     }
     if (type === 'session.next.text.delta') {
       if (!managed) return;
       const text = `${activeText.get(sessionID) ?? ''}${typeof properties.delta === 'string' ? properties.delta : ''}`;
       activeText.set(sessionID, text);
-      appendText(sessionID, text);
+      appendText(
+        sessionID,
+        text,
+        textMessageID(properties) ?? activeMessageIDs.get(sessionID),
+      );
       return;
     }
     if (type === 'session.next.text.ended') {
@@ -355,8 +385,11 @@ export function createV2InterviewBridge(
         typeof properties.text === 'string'
           ? properties.text
           : (activeText.get(sessionID) ?? '');
+      const messageID =
+        textMessageID(properties) ?? activeMessageIDs.get(sessionID);
       activeText.delete(sessionID);
-      appendText(sessionID, text);
+      activeMessageIDs.delete(sessionID);
+      appendText(sessionID, text, messageID);
       await (dashboardManager ?? service).handleEvent({
         event: { type, properties },
       });
@@ -364,9 +397,30 @@ export function createV2InterviewBridge(
     }
     if (type === 'session.deleted') {
       activeText.delete(sessionID);
+      activeMessageIDs.delete(sessionID);
       transcripts.delete(sessionID);
       await (dashboardManager ?? service).handleEvent({
         event: { type: 'session.deleted', properties: { sessionID } },
+      });
+      return;
+    }
+
+    if (
+      type === 'session.execution.started' ||
+      type === 'session.execution.succeeded' ||
+      type === 'session.execution.failed' ||
+      type === 'session.execution.interrupted'
+    ) {
+      // Live v2 publishes lifecycle as durable `session.execution.*` events
+      // and no longer streams busy/idle `session.status` (see
+      // event-adapter.ts). The bridge receives the RAW event, so without this
+      // mapping the v2 service never sees a turn end and never posts notices.
+      const statusType = type === 'session.execution.started' ? 'busy' : 'idle';
+      await (dashboardManager ?? service).handleEvent({
+        event: {
+          type: 'session.status',
+          properties: { sessionID, status: { type: statusType } },
+        },
       });
       return;
     }
@@ -389,6 +443,7 @@ export function createV2InterviewBridge(
       if (dashboardManager) await dashboardManager.dispose();
       server?.close();
       activeText.clear();
+      activeMessageIDs.clear();
       transcripts.clear();
       log('[v2][interview] bridge disposed');
     },

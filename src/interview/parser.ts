@@ -169,6 +169,32 @@ export function buildFallbackState(
   };
 }
 
+/**
+ * Normalize a raw parsed state object into the canonical assistant state.
+ * Shared by the text parser and the `interview_submit_state` tool path so
+ * both produce identical state for equivalent input.
+ */
+export function normalizeAssistantState(
+  parsed: Record<string, unknown>,
+  maxQuestions = 2,
+): InterviewAssistantState {
+  const summary =
+    typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+  const patch = typeof parsed.patch === 'string' ? parsed.patch : undefined;
+  const title =
+    typeof parsed.title === 'string' && parsed.title.trim().length > 0
+      ? parsed.title.trim()
+      : undefined;
+  const questions = Array.isArray(parsed.questions)
+    ? parsed.questions
+        .map((value, index) => normalizeQuestion(value, index))
+        .filter((value): value is InterviewQuestion => value !== null)
+        .slice(0, maxQuestions)
+    : [];
+
+  return { summary, patch, title, questions };
+}
+
 export function parseAssistantState(
   text: string,
   maxQuestions = 2,
@@ -190,28 +216,7 @@ export function parseAssistantState(
   }
 
   try {
-    const summary =
-      typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
-    const patch = typeof parsed.patch === 'string' ? parsed.patch : undefined;
-    const title =
-      typeof parsed.title === 'string' && parsed.title.trim().length > 0
-        ? parsed.title.trim()
-        : undefined;
-    const questions = Array.isArray(parsed.questions)
-      ? parsed.questions
-          .map((value, index) => normalizeQuestion(value, index))
-          .filter((value): value is InterviewQuestion => value !== null)
-          .slice(0, maxQuestions)
-      : [];
-
-    return {
-      state: {
-        summary,
-        patch,
-        title,
-        questions,
-      },
-    };
+    return { state: normalizeAssistantState(parsed, maxQuestions) };
   } catch (error) {
     return {
       state: null,

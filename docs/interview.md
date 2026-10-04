@@ -45,6 +45,53 @@ You can also resume by basename if it exists in the configured output folder:
 /interview kanban-design-tool
 ```
 
+## What the TUI shows
+
+By default the interview does not print the spec or the patch diff. The
+orchestrator calls the `interview_submit_state` tool instead, and the TUI shows
+just the tool row (`⚙ interview_submit_state`).
+
+After each turn the service posts one status line:
+
+```text
+⎔ Spec updated · N questions · UI: <url> · Doc: <path>
+```
+
+If a turn ends without new state, it posts one error line instead:
+
+```text
+⎔ Interview update failed: <reason> · UI: <url>
+```
+
+If the model prints an `<interview_state>` block instead of calling the tool, the
+block is applied and then stripped from the TUI automatically on OpenCode v1. On
+OpenCode v2 the fallback block stays visible.
+
+Some providers only expose plugin tools explicitly allowlisted in the provider
+config, in which case the tool is hidden from the model unless it is listed. For
+example, with `@khalilgharbaoui/opencode-claude-code-plugin` add:
+
+```json
+{
+  "provider": {
+    "claude-code": {
+      "options": {
+        "proxyOpencodeTools": ["interview_submit_state"]
+      }
+    }
+  }
+}
+```
+
+Then fully restart OpenCode. Without this, the model cannot see the tool and
+falls back to the printed block (stripped on v1, visible on v2). Providers may
+also expose the tool under a prefixed name like
+`mcp__<server>__interview_submit_state`; the interview prompts tell the model to
+search for it when its tool list is deferred.
+
+Set `interview.verbose` to `true` to keep the full `<interview_state>` block
+visible (legacy behavior). See [Options](#options).
+
 ## What the browser UI gives you
 
 - focused question flow instead of open-ended chat
@@ -235,7 +282,8 @@ The dashboard page includes a settings panel for:
       "outputFolder": "interview",
       "autoOpenBrowser": true,
       "port": 0,
-      "dashboard": false
+      "dashboard": false,
+      "verbose": false
     }
   }
 }
@@ -248,6 +296,7 @@ The dashboard page includes a settings panel for:
 - `autoOpenBrowser` - open the localhost UI in your default browser during interactive runs, default `true` (suppressed automatically in tests and CI)
 - `port` - port for the interview server, `0-65535`, default `0` (OS-assigned in per-session mode). Set a fixed port to enable dashboard mode. Note: ports 1-1023 require elevated privileges on most systems.
 - `dashboard` - enable dashboard mode on the default port (`43211`), default `false`. Setting `port` to a value greater than `0` also enables dashboard mode. If both are set, `port` takes precedence.
+- `verbose` - opt-in debug mode, default `false`. When `true`, the interview model prints the full `<interview_state>` block in the TUI (legacy behavior) and the block is not stripped. When `false`, the quiet submit-tool path is used.
 
 ### Mode selection
 
@@ -257,9 +306,9 @@ The dashboard page includes a settings panel for:
 | `0` | `true` | Dashboard on default port 43211 |
 | `> 0` | any | Dashboard on the specified port |
 
-The v2 bridge receives the resolved values for all five interview options, so
-`maxQuestions`, `outputFolder`, `autoOpenBrowser`, `port`, and `dashboard` are
-also honored when OpenCode loads the v2 plugin entry point.
+The v2 bridge receives the resolved values for all six interview options, so
+`maxQuestions`, `outputFolder`, `autoOpenBrowser`, `port`, `dashboard`, and
+`verbose` are also honored when OpenCode loads the v2 plugin entry point.
 
 ## Remote access
 

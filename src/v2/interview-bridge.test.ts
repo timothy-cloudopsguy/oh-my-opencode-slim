@@ -365,6 +365,66 @@ describe('v2 interview bridge', () => {
     });
   });
 
+  test('maps v2 session.execution lifecycle into a turn notice', async () => {
+    const directory = `.tmp-v2-interview-exec-${Date.now()}`;
+    const synthetic = mock(async () => ({}));
+    const bridge = createV2InterviewBridge(createContext({ synthetic }), {
+      outputFolder: directory,
+    } as never);
+    await bridge.handleContext({
+      sessionID: 'ses_exec',
+      agent: 'orchestrator',
+      model: {},
+      system: [],
+      tools: {},
+      messages: [
+        {
+          id: 'u',
+          role: 'user',
+          content: [{ type: 'text', text: markerText('exec idea') }],
+        },
+      ],
+    });
+    expect(bridge.service.getActiveInterviewId('ses_exec')).not.toBeNull();
+
+    await bridge.handleEvent({
+      type: 'session.next.text.started',
+      properties: { sessionID: 'ses_exec', messageID: 'msg-1' },
+    });
+    await bridge.handleEvent({
+      type: 'session.next.text.ended',
+      properties: { sessionID: 'ses_exec', messageID: 'msg-1', text: 'Done.' },
+    });
+
+    // Live v2 emits execution.started (busy) before the turn's tool submit.
+    await bridge.handleEvent({
+      type: 'session.execution.started',
+      properties: { sessionID: 'ses_exec' },
+    });
+    const applied = await bridge.service.submitState(
+      'ses_exec',
+      {
+        summary: 'Exec spec',
+        questions: [{ id: 'q-1', question: 'Q?' }],
+      },
+      'msg-1',
+    );
+    expect(applied.ok).toBe(true);
+    await bridge.handleEvent({
+      type: 'session.execution.succeeded',
+      properties: { sessionID: 'ses_exec' },
+    });
+
+    const calls = synthetic.mock.calls as unknown as Array<[{ text?: string }]>;
+    const notices = calls.map((call) => String(call[0]?.text ?? ''));
+    expect(notices.some((text) => text.includes('⎔ Spec updated'))).toBe(true);
+    bridge.dispose();
+    await fs.rm(`${process.cwd()}/${directory}`, {
+      recursive: true,
+      force: true,
+    });
+  });
+
   test('projects text events and removes a deleted session', async () => {
     const directory = `.tmp-v2-interview-text-${Date.now()}`;
     const bridge = createV2InterviewBridge(createContext(), {

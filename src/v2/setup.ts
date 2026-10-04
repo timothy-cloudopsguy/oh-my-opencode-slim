@@ -2059,6 +2059,14 @@ export function createV2Setup(): (ctx: V2Context) => Promise<V2Cleanup> {
         implementEnabled: implementCommandEnabled,
       });
       disposers.push(() => interviewBridge.dispose());
+      // The submit tool and text-complete fallback are built inside the v1
+      // factory against the v1 interview manager. On v2 the bridge owns the
+      // live transcript and active interviews, so point them at its service.
+      (
+        v1Hooks as {
+          'v2.setInterviewService'?: (service: unknown) => void;
+        }
+      )['v2.setInterviewService']?.(interviewBridge.service);
 
       // Commands do not depend on agent finalization or host state.
       let finalizedRegistry:

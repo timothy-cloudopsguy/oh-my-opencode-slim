@@ -1348,6 +1348,11 @@
         "dashboard": {
           "default": false,
           "type": "boolean"
+        },
+        "verbose": {
+          "default": false,
+          "description": "Opt-in debug mode. When true, the interview model prints the full <interview_state> block in the TUI (legacy behavior) instead of using the quiet submit-tool path.",
+          "type": "boolean"
         }
       }
     },

@@ -9,6 +9,7 @@ export function createPerSessionInterviewServer(
   interviewConfig: InterviewConfig | undefined,
   outputFolder: string,
 ): {
+  service: ReturnType<typeof createInterviewService>;
   registerCommand: (
     config: Record<string, unknown>,
     enabled?: { interview?: boolean; implement?: boolean },
@@ -31,6 +32,7 @@ export function createPerSessionInterviewServer(
   let disposed = false;
 
   return {
+    service,
     registerCommand: (c, enabled) => service.registerCommand(c, enabled),
     handleCommandExecuteBefore: async (input, output) =>
       service.handleCommandExecuteBefore(input, output),

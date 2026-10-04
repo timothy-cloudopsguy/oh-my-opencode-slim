@@ -81,6 +81,7 @@ const INTERVIEW_CONFIG_KEYS = [
   'autoOpenBrowser',
   'port',
   'dashboard',
+  'verbose',
 ] as const;
 const LEGACY_BACKGROUND_JOBS_KEYS = ['continueOnIdle'] as const;
 

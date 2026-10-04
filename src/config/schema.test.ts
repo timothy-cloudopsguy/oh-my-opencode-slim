@@ -672,6 +672,30 @@ describe('InterviewConfigSchema outputFolder', () => {
   });
 });
 
+describe('InterviewConfigSchema verbose', () => {
+  it('defaults to false', () => {
+    const interviewResult = InterviewConfigSchema.safeParse({});
+    const pluginResult = PluginConfigSchema.safeParse({ interview: {} });
+
+    expect(interviewResult.success).toBe(true);
+    expect(pluginResult.success).toBe(true);
+    if (interviewResult.success) {
+      expect(interviewResult.data.verbose).toBe(false);
+    }
+    if (pluginResult.success) {
+      expect(pluginResult.data.interview?.verbose).toBe(false);
+    }
+  });
+
+  it('accepts an explicit true', () => {
+    const interviewResult = InterviewConfigSchema.safeParse({ verbose: true });
+    expect(interviewResult.success).toBe(true);
+    if (interviewResult.success) {
+      expect(interviewResult.data.verbose).toBe(true);
+    }
+  });
+});
+
 describe('PluginConfigSchema backgroundJobs', () => {
   let warnSpy: Mock<typeof console.warn>;
 

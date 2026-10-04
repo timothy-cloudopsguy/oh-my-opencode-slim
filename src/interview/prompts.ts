@@ -18,6 +18,42 @@ function formatQuestionContext(questions: InterviewQuestion[]): string {
     .join('\n\n');
 }
 
+export const TOOL_NAME_HINT =
+  'The tool may be exposed under a prefixed name like "mcp__<server>__interview_submit_state"; if your tool list is deferred, search for or load it before answering.';
+
+export const TOOL_FALLBACK_HINT =
+  'If no interview_submit_state tool (under any name) is available, output exactly one <interview_state>{...}</interview_state> block with the same JSON object and nothing else: no prose and no explanation that the tool is unavailable.';
+
+const KICKOFF_STATE_FIELDS = [
+  '{',
+  '  "summary": "Full specification markdown (strictly matching the 11 section titles above)",',
+  '  "title": "concise-kebab-case-title-for-filename",',
+  '  "questions": [',
+  '    {',
+  '      "id": "short-kebab-id-2",',
+  '      "question": "question text",',
+  '      "options": ["option 1", "option 2", "option 3"],',
+  '      "suggested": "best suggested option"',
+  '    }',
+  '  ]',
+  '}',
+] as const;
+
+const PATCH_STATE_FIELDS = [
+  '{',
+  '  "summary": "one-line status of what changed",',
+  '  "patch": "--- a/spec\\n+++ b/spec\\n@@ -1,1 +1,1 @@\\n-old line\\n+new line",',
+  '  "questions": [',
+  '    {',
+  '      "id": "short-kebab-id",',
+  '      "question": "question text",',
+  '      "options": ["option 1", "option 2"],',
+  '      "suggested": "option 1"',
+  '    }',
+  '  ]',
+  '}',
+] as const;
+
 export const SPECIFICATION_TEMPLATE_GUIDELINE = `
 Your target document MUST be structured strictly using the following 11-section template (exclude the frontmatter itself from the summary JSON field, as the tool handles frontmatter automatically):
 
@@ -67,7 +103,26 @@ ANTI-ASSUMPTION & SUB-AGENT DELEGATION RULE:
 Do not invent file structures, API signatures, package lists, or library behaviors. If you need to trace local code, verify file paths, or check configurations, you MUST call the sub-agent '@explorer' or search files directly. If you need to search documentation or web info for external APIs/libraries, you MUST call the sub-agent '@librarian' or search the web. Do not guess. Pause, run discovery, and integrate facts into the spec.
 `;
 
-export function buildKickoffPrompt(idea: string, maxQuestions: number): string {
+export function buildKickoffPrompt(
+  idea: string,
+  maxQuestions: number,
+  verbose = false,
+): string {
+  const stateInstruction = verbose
+    ? [
+        'After any short human-friendly preface, you MUST include a machine-readable block in this exact format:',
+        '<interview_state>',
+        ...KICKOFF_STATE_FIELDS,
+        '</interview_state>',
+      ]
+    : [
+        'Call the interview_submit_state tool exactly once with this object:',
+        ...KICKOFF_STATE_FIELDS,
+        TOOL_NAME_HINT,
+        TOOL_FALLBACK_HINT,
+        'Otherwise do not print an <interview_state> block and write no other prose.',
+      ];
+
   return [
     'You are running an interview q&a session for the user inside their repository.',
     `Initial idea: ${idea}`,
@@ -76,21 +131,7 @@ export function buildKickoffPrompt(idea: string, maxQuestions: number): string {
     `Clarify the idea through short rounds of at most ${maxQuestions} questions at a time.`,
     'When useful, each question may include 2 to 4 answer options and one suggested option.',
     'Be practical. Focus on the highest-ambiguity and highest-risk decisions first.',
-    'After any short human-friendly preface, you MUST include a machine-readable block in this exact format:',
-    '<interview_state>',
-    '{',
-    '  "summary": "Full specification markdown (strictly matching the 11 section titles above)",',
-    '  "title": "concise-kebab-case-title-for-filename",',
-    '  "questions": [',
-    '    {',
-    '      "id": "short-kebab-id-2",',
-    '      "question": "question text",',
-    '      "options": ["option 1", "option 2", "option 3"],',
-    '      "suggested": "best suggested option"',
-    '    }',
-    '  ]',
-    '}',
-    '</interview_state>',
+    ...stateInstruction,
     'Rules:',
     `- Return 0 to ${maxQuestions} questions.`,
     '- If there are no more useful questions or the specification is complete, return zero questions.',
@@ -116,28 +157,34 @@ function describeSpec(context: SpecPromptContext): string {
   ].join('\n');
 }
 
-function patchContract(maxQuestions: number): string {
+function patchContract(maxQuestions: number, verbose = false): string {
+  if (verbose) {
+    return [
+      'The file on disk is the source of truth.',
+      'summary is a one-line status of what changed, not the specification.',
+      'patch is a unified diff against the current spec body only: the markdown under "## Current spec".',
+      'Do not include YAML frontmatter or the "## Q&A history" section in the diff.',
+      'If the spec body does not change, set patch to an empty string.',
+      'After any short preface, include this block:',
+      '<interview_state>',
+      ...PATCH_STATE_FIELDS,
+      '</interview_state>',
+      `Return 0 to ${maxQuestions} questions.`,
+      'If there are no more useful questions or the specification is complete, return zero questions.',
+    ].join('\n');
+  }
+
   return [
     'The file on disk is the source of truth.',
     'summary is a one-line status of what changed, not the specification.',
     'patch is a unified diff against the current spec body only: the markdown under "## Current spec".',
     'Do not include YAML frontmatter or the "## Q&A history" section in the diff.',
     'If the spec body does not change, set patch to an empty string.',
-    'After any short preface, include this block:',
-    '<interview_state>',
-    '{',
-    '  "summary": "one-line status of what changed",',
-    '  "patch": "--- a/spec\\n+++ b/spec\\n@@ -1,1 +1,1 @@\\n-old line\\n+new line",',
-    '  "questions": [',
-    '    {',
-    '      "id": "short-kebab-id",',
-    '      "question": "question text",',
-    '      "options": ["option 1", "option 2"],',
-    '      "suggested": "option 1"',
-    '    }',
-    '  ]',
-    '}',
-    '</interview_state>',
+    'Call the interview_submit_state tool exactly once with the state object:',
+    ...PATCH_STATE_FIELDS,
+    TOOL_NAME_HINT,
+    TOOL_FALLBACK_HINT,
+    'Otherwise do not print an <interview_state> block and write no other prose.',
     `Return 0 to ${maxQuestions} questions.`,
     'If there are no more useful questions or the specification is complete, return zero questions.',
   ].join('\n');
@@ -146,6 +193,7 @@ function patchContract(maxQuestions: number): string {
 export function buildResumePrompt(
   context: SpecPromptContext,
   maxQuestions: number,
+  verbose = false,
 ): string {
   return [
     'Resume the interview from the existing markdown document.',
@@ -154,7 +202,7 @@ export function buildResumePrompt(
     SPECIFICATION_TEMPLATE_GUIDELINE,
     describeSpec(context),
     `Ask the next highest-value clarifying questions, up to ${maxQuestions} at a time.`,
-    patchContract(maxQuestions),
+    patchContract(maxQuestions, verbose),
   ].join('\n\n');
 }
 
@@ -163,6 +211,7 @@ export function buildAnswerPrompt(
   questions: InterviewQuestion[],
   maxQuestions: number,
   context: SpecPromptContext,
+  verbose = false,
 ): string {
   const answerText = answers
     .map(
@@ -180,7 +229,7 @@ export function buildAnswerPrompt(
     'The user answered:',
     answerText,
     'Update the specification with a unified diff and ask the next highest-value clarifying questions.',
-    patchContract(maxQuestions),
+    patchContract(maxQuestions, verbose),
   ].join('\n\n');
 }
 
@@ -189,6 +238,7 @@ export function buildBlockCommentPrompt(
   comment: string,
   maxQuestions: number,
   context: SpecPromptContext,
+  verbose = false,
 ): string {
   return [
     'Continue the same interview.',
@@ -198,7 +248,7 @@ export function buildBlockCommentPrompt(
     `Feedback: ${comment}`,
     `Update the spec with a unified diff, focusing on "${sectionTitle}".`,
     'If this feedback implies other parts of the spec should change, include those hunks too.',
-    patchContract(maxQuestions),
+    patchContract(maxQuestions, verbose),
   ].join('\n\n');
 }
 
@@ -206,6 +256,7 @@ export function buildChatPrompt(
   message: string,
   maxQuestions: number,
   context: SpecPromptContext,
+  verbose = false,
 ): string {
   return [
     'Continue the same interview.',
@@ -215,7 +266,7 @@ export function buildChatPrompt(
     message,
     'The request may add a section, revise content, or ask for clarifying questions.',
     'Update the specification with a unified diff.',
-    patchContract(maxQuestions),
+    patchContract(maxQuestions, verbose),
   ].join('\n\n');
 }
 
@@ -223,6 +274,7 @@ export function buildNudgePrompt(
   action: 'more-questions' | 'confirm-complete',
   maxQuestions: number,
   context: SpecPromptContext,
+  verbose = false,
 ): string {
   if (action === 'confirm-complete') {
     return [
@@ -241,7 +293,7 @@ export function buildNudgePrompt(
     describeSpec(context),
     'The user reviewed the spec and wants more questions.',
     `Ask up to ${maxQuestions} new clarifying questions about aspects that are still unclear or underspecified.`,
-    patchContract(maxQuestions),
+    patchContract(maxQuestions, verbose),
   ].join('\n\n');
 }
 
@@ -276,6 +328,7 @@ export function buildPatchRepairPrompt(
   failedHunk: string,
   contextWindow: string,
   maxQuestions: number,
+  verbose = false,
 ): string {
   return [
     'The previous spec patch did not apply.',
@@ -285,6 +338,6 @@ export function buildPatchRepairPrompt(
     failedHunk,
     'Nearby spec lines:',
     contextWindow,
-    patchContract(maxQuestions),
+    patchContract(maxQuestions, verbose),
   ].join('\n\n');
 }

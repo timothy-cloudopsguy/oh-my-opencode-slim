@@ -90,6 +90,7 @@ import {
   ast_grep_search,
   createAcpRunTool,
   createCancelTaskTool,
+  createInterviewSubmitStateTool,
   createMarketplaceTools,
   createTaskMessageTool,
   createTaskReplyTool,
@@ -631,6 +632,9 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
   let taskStatusTools: ReturnType<typeof createTaskStatusTool>;
   const taskActivityTracker = new TaskActivityTracker();
   let waitForUserTools: ReturnType<typeof createWaitForUserTool>;
+  let interviewSubmitService: ReturnType<
+    typeof createInterviewManager
+  >['service'];
   let acpRunTools: Record<string, ReturnType<typeof createAcpRunTool>>;
   let webfetch: ReturnType<typeof createWebfetchTool>;
   let tools: Record<string, ToolDefinition>;
@@ -1350,6 +1354,7 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
       taskSessionManagerHook['tool.execute.after'](i as never, o as never),
     );
     interviewManager = createInterviewManager(ctx, config);
+    interviewSubmitService = interviewManager.service;
     companionManager = new CompanionManager(
       `proc_${process.pid}`,
       ctx.directory,
@@ -1424,6 +1429,13 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
     });
 
     const shouldRegisterWebfetch = runtime.webfetch.enabled !== false;
+    const shouldRegisterInterview = !runtime.disabledCommands.has('interview');
+    const interviewTools = shouldRegisterInterview
+      ? createInterviewSubmitStateTool({
+          service: () => interviewSubmitService,
+          maxQuestions: config.interview?.maxQuestions,
+        })
+      : {};
     tools = {
       ...taskCancelTools,
       ...taskMessageTools,
@@ -1432,6 +1444,7 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
       ...taskReviveTools,
       ...taskStatusTools,
       ...waitForUserTools,
+      ...interviewTools,
       ...acpRunTools,
       ...(shouldRegisterWebfetch ? { webfetch } : {}),
       ast_grep_search,
@@ -1887,6 +1900,14 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
     }) => resolveDelegatedModelForParent(agentType, parentSessionID)?.entry.id,
     'v2.session.retry':
       foregroundFallback.handleV2Retry.bind(foregroundFallback),
+    // v2 owns its own interview bridge/service; point the submit tool and
+    // text-complete fallback at it so `/interview` state lands in the same
+    // service that captured the session transcript.
+    'v2.setInterviewService': (
+      service: ReturnType<typeof createInterviewManager>['service'],
+    ) => {
+      interviewSubmitService = service;
+    },
 
     agent: agents,
 
@@ -2451,6 +2472,21 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
     // v2 handles compaction in its separate session.compaction bridge.
     'experimental.session.compacting': async ({ sessionID }) => {
       compactingSessionIds.add(sessionID);
+    },
+
+    // v1-only interview fallback: capture a printed <interview_state> block
+    // through the shared apply step, then strip it from the saved/visible
+    // text. v2 has no equivalent hook (CON-006).
+    'experimental.text.complete': async (input, output) => {
+      try {
+        output.text = await interviewSubmitService.completeInterviewText(
+          input.sessionID,
+          output.text,
+          input.messageID,
+        );
+      } catch (err) {
+        log('[plugin] interview text completion failed', String(err));
+      }
     },
 
     // Track which agent each session uses (needed for serve-mode prompt
